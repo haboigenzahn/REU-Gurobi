@@ -1,0 +1,36 @@
+Error checking reminders in Gurobi:
+Because their error messages are, by en lange, completely unhelpful
+
+Missing constraint index:
+	Trying to add multiple constraints when you are only adding one.
+	Change addConstrs to addConstr
+
+*not exact language	
+Incompatible operator - cannot accept objects of type :generator or :none
+	Adding a single constraint when you should be adding multiple.
+	Change addConstr to addConstrs
+	
+KeyError
+	Dictionary keys might not match. Might be imported/declared in a different order than called.
+	
+	Might be trying to call a dictionary key that has been filtered out by a subset operation.
+	
+	Keys are not part of a multidimensional array - instead of F[i][j][t] use F[i,j,t]
+
+dict object is not callable (or tupledict object is not callable)
+	Used () instead of [] to specify and index
+	
+TypeError: a float is required
+	May have used .addVar instead of .addVars
+
+Too Many Values to Unpack	
+	Might be using a single value key but calling a tuple key
+	
+	NOTES	
+For loops can be written outside of addConstr() completely (use singular)
+for i in feeds:
+	for l in brfs:
+		model.addConstr()
+
+... or they can be written after the rest of the equation, within addConstrs() (use plural)
+model.addConstrs(F[i,j] >= quicksum(G[i,j,k] for k in depots) for i in feeds for j in hs)

@@ -8,6 +8,9 @@ from gurobipy import *
 import pandas as pd
 import numpy as np
 from collections import defaultdict
+import time
+
+starttime=time.time()
 
 file = pd.ExcelFile('Task2a_gurobi.xlsx')
 
@@ -20,7 +23,7 @@ itrmds = ['pellet']
 prods = ['EtOH']
 
 #Harvest Sites
-hs_df = file.parse(sheetname='Sheet1', header=None, skipfooter = 1, parse_cols='B')
+hs_df = file.parse(sheetname='Sheet1', header=0, skipfooter = 1, parse_cols='B')
 u_hs = hs_df.values.flatten()
 hs = [str(k) for k in u_hs]
 #print hs
@@ -99,17 +102,22 @@ psil = {'pre':100,'SSCF':800 }
 # Maximum daily operating capacity (tons)
 psiu = {'pre':3000, 'SSCF':9000}
 
-#TODO: Check that the fact that these columns have the same name isn't causing the column to actually be duplicated/excluded
+#Distance from harvest site to biorefinery (miles)
+# Format {hs: distance} since there is only one biorefinery in this model
 tau_df = file.parse(sheetName='Sheet1',skip_footer=1,parse_cols='Q,R,U,V')
 #Distance from harvest site to biorefinery (miles)
 u_taujl = tau_df.iloc[: , 0:2].set_index('Sites').T.to_dict('list')
 taujl = {str(k): v[0] for k, v in u_taujl.items()}
 #print taujl
+
 #Distance from depot to biorefinery (miles)
+# Format {depot: distance} since there is only one biorefinery in this model
 u_taukl = tau_df.iloc[: , 2:4].set_index('Depots').T.to_dict('list')
 taukl = {str(k): v[0] for k, v in u_taukl.items()}
 #print taukl
 
+# Distance from harvest site to depot
+# Format {(hs, dpt): distance}
 tau_df2 = file.parse(sheetname=1,header=2,parse_cols='C:EH')
 u_taujk = tau_df2.T.to_dict('list')
 temp_taujk = {str(k):v for k,v in u_taujk.items()}
@@ -126,11 +134,11 @@ for h,v in temp_taujk.iteritems():
 rho = 85
 
 # --------------------- More Sets -------------------
-# TODO: check that these re-assignments are working and not butchering the data
+# Limit taujk and taujl to only include harvest sites within a reasonable range
 taujk = {k:v for k,v in taujk.iteritems() if v < 50}
 taujl = {k:v for k,v in taujl.iteritems() if v < 200}
 
-# ------------------- Variables ----------------------
+## ------------------- Variables ----------------------
 # Total annual cost (10^6 $)
 TAC = mod.addVar(name="TAC")
 # Total cost of feedstock during period t (10^6 $)
@@ -157,7 +165,7 @@ Fkl = mod.addVars(itrmds,dpts,brfs,times,name="Fkl")
 # Consumption of compound at deppot/biorefinery during period (10^6 tons)
 Gl_f = mod.addVars(feeds,brfs,brfs_techs,times,name="Gl_f")
 Gl_i = mod.addVars(itrmds,brfs,brfs_techs,times,name="Gl_i")
-Gk = mod.addVars(feeds,brfs,dpts_techs,times,name="Gk")
+Gk = mod.addVars(feeds,dpts,dpts_techs,times,name="Gk")
 
 # Production of compound at biorefinery/depot using technology m during period (10^6 tons)
 Pl = mod.addVars(prods,brfs,brfs_techs,times,name="Pl")
@@ -181,6 +189,9 @@ mod.update()
 
 mod.setObjective(TAC,GRB.MINIMIZE)
 
+#Total cost formulation (10^6 $)
+mod.addConstr(quicksum(Cfeed[t]+Cinv[t]+Cprod[t]+Ctrans[t] for t in times)+Ccapex == TAC)
+
 # Feedstock cost (10^6 $)
 for t in times:
     mod.addConstrs(quicksum(H[i,j,t]*llambda[i] for i in feeds for j in hs) == Cfeed[t] for t in times)
@@ -189,14 +200,14 @@ for t in times:
     mod.addConstr((quicksum(Sj[i,j,t]*iota[i] for i in feeds for j in hs)+quicksum(Sk[i,k,t]*iota[i] for i in itrmds for k in dpts)) == Cinv[t])
 # Production cost (10^6 $)    
 for t in times:
-    (mod.addConstr((quicksum(Gl_f[i,l,m,t]*mu[m] for i in feeds for l in brfs for m in brfs_techs) + quicksum(Gl_i[i,l,m,t]*mu[m]
-                  for i in itrmds for m in brfs_techs) + quicksum(Gk[i,k,m,t]*mu[m] for i in feeds for k in dpts for m in dpts_tech))) == Cprod[t])  
+    mod.addConstr((quicksum(Gl_f[i,l,m,t]*mu[m] for i in feeds for l in brfs for m in brfs_techs) + quicksum(Gl_i[i,l,m,t]*mu[m]
+                  for i in itrmds for l in brfs for m in brfs_techs) + quicksum(Gk[i,k,m,t]*mu[m] for i in feeds for k in dpts for m in dpts_techs)) == Cprod[t])  
 # Transportation cost (10^6 $)    
 for t in times:
-    mod.addConstr(quicksum((kappaTf[i]+kappaTv[i]*taujl[(j,l)])*Fjl[i,j,l,t] for i in feeds for (j,l) in taujl for l in brfs \
-                           for j in hs)+quicksum((kappaTf[i]+kappaTv[i]*taujk[(j,k)])*Fjk[i,j,k,t] for i in feeds \
-                            for (j,k) in taujk for k in dpts for j in hs) + quicksum((kappaRf[i]+kappaRv[i]*taukl[(k,l)])*Fkl[i,k,l,t] \
-                              for i in itrmds for (k,l) in taukl for k in dpts for l in brfs) == Ctrans[t])    
+    mod.addConstr(quicksum((kappaTf[i]+kappaTv[i]*taujl[j])*Fjl[i,j,l,t] for i in feeds for l in brfs \
+                           for j in taujl)+quicksum((kappaTf[i]+kappaTv[i]*taujk[(j,k)])*Fjk[i,j,k,t] for i in feeds for j in hs \
+                            for k in dpts for (j,k) in taujk) + quicksum((kappaRf[i]+kappaRv[i]*taukl[k])*Fkl[i,k,l,t] \
+                              for i in itrmds for k in dpts for l in brfs) == Ctrans[t])    
 # Annualized capital cost based on daily plant capacity (10^6 $)
 mod.addConstr(quicksum((zeta[m]*Ql[l,m]/2000) for m in brfs_techs for l in brfs)+quicksum((zeta[m]*Qk[k,m]/200) for m in dpts_techs for k in dpts) == Ccapex)
 
@@ -218,3 +229,74 @@ for i in itrmds:
                 mod.addConstr(Sk[i,k,t-1]*(1-gamma[i])-quicksum(Fkl[i,k,l,t] for l in brfs)+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
             elif t==1:
                 mod.addConstr(Sk[i,k,t+3]*(1-gamma[i])-quicksum(Fkl[i,k,l,t] for l in brfs)+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
+
+# Harvest site inventories (10^6 tons)
+for i in feeds:
+    for j in hs:
+        for t in times:
+            if t > 1:
+                mod.addConstr((Sj[i,j,t-1]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,l,t] for l in brfs if j in taujl)- \
+                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in taujk)) == Sj[i,j,t])
+            elif t==1:
+                mod.addConstr((Sj[i,j,t+3]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,l,t] for l in brfs if j in taujl)- \
+                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in taujk)) == Sj[i,j,t])
+                
+# Product equals amount consumed*yield for product at biorefinery l
+for ip in prods:
+  for l in brfs:
+      for m in brfs_techs:
+          for t in times:
+              mod.addConstr(quicksum(eta[(i,ip,m)]*Gl_i[i,l,m,t] for i in itrmds)+quicksum(eta[(i,ip,m)]*Gl_f[i,l,m,t] for i in feeds) == Pl[ip,l,t])              
+
+# Intermediate produced equals feed consumed*yield for technology m at depot k (10^6 tons)
+for ip in itrmds:
+  for k in dpts:
+      for m in dpts_techs:
+          for t in times:
+              mod.addConstr(quicksum(eta[(i,ip,m)]*Gk[i,k,m,t] for i in feeds) == Pk[ip,l,t]) 
+
+# Shipping Constraints
+# Biomass converted is equal to the amount shipped to depot k (no storage of biomass at depot) (10^6 tons)
+for i in feeds:
+    for k in dpts:
+        for t in times:
+            mod.addConstr(quicksum(Gk[i,k,m,t] for m in dpts_techs) == quicksum(Fjk[i,j,k,t] for j in hs if (j,k) in taujk))
+# Intermediates converted is equal to the amount shipped to biorefinery l (no storage of intermediates at depot) (10^6 tons)
+for i in feeds:
+    for l in brfs:
+        for t in times:
+            mod.addConstrs(quicksum(Gl_f[i,l,m,t] for m in brfs_techs) == quicksum(Fjl[i,j,l,t] for j in taujl))
+# Biomass converted is equal to the amount shipped to biorefinery l (no storage of biomass at biorefinery) (10^6 tons) 
+for i in itrmds:
+    for l in brfs:
+        for t in times:
+            mod.addConstrs(quicksum(Gl_i[i,l,m,t] for m in brfs_techs) == quicksum(Fkl[i,k,l,t] for k in taukl))
+
+# Cannot harvest more biomass than the site produces (10^6 tons)
+mod.addConstrs(alpha[j,i,t]*(pow(10,-6)) >= H[i,j,t] for i in feeds for j in hs for t in times) 
+
+# Product sold from biorefinery during period t (10^6 L) 
+mod.addConstrs(quicksum(R[i,l,t] for l in brfs) >= beta for i in prods for t in times) 
+
+# Capacity constraints
+# Amount consumed must be less than the capacity limit of the technology at the biorefinery (tons per day)
+mod.addConstrs((quicksum(Gl_f[i,l,m,t] for i in feeds)+quicksum(Gl_i[i,l,m,t] for i in itrmds))*(pow(10,6)/rho) <= Ql[l,m] for l in brfs for m in brfs_techs for t in times)
+# Lower capacity of technology (tons)
+mod.addConstrs(psil[m] <= Q[l,m] for l in brfs for m in brfs_techs)
+# Upper capacity of technology (tons)
+mod.addConstrs(psiu[m] >= Q[l,m] for l in brfs for m in brfs_techs)
+
+# Amount consumed must be less than the capacity limit of the technology at the biorefinery (tons per day)
+mod.addConstrs(quicksum(Gk[i,k,m,t] for i in feeds)*(pow(10,6)/rho) <= Qk[k,m] for l in brfs for m in dpts_techs for t in times)
+# Lower capacity of technology (tons)
+mod.addConstrs(psil[m]*Uk[k,m] <= Q[l,m] for k in dpts for m in dpts_techs)
+# Upper capacity of technology (tons)
+mod.addConstrs(psiu[m]*Uk[k,m] >= Q[l,m] for k in dpts for m in dpts_techs)
+
+# Exactly one technology per depot k 
+mod.addConstrs(quicksum(Uk[k,m] for m in dpts_techs) <= 1)       
+
+mod.optimize()
+
+print mod.objVal
+print("Program Time: %s" % (time.time() - starttime))

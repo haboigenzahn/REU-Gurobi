@@ -8,8 +8,11 @@ Created on Fri Jun 23 11:07:01 2017
 from gurobipy import *
 import pandas as pd
 import numpy as np
+import time
 
-file = pd.ExcelFile('..\gamsdir\projdir\Task1b_gurobi.xlsx')
+starttime = time.time()
+
+file = pd.ExcelFile('Task1b_gurobi.xlsx')
 
 mod = Model('Task1b')
 
@@ -22,7 +25,6 @@ prods = ['EtOH']
 hs_df = file.parse(skipfooter=677,parse_cols='M')
 u_hs = hs_df.values.flatten()
 hs = [str(k) for k in u_hs]
-print hs
 
 #Biorefineries
 brfs = ['B1','B2','B3','B4']
@@ -213,7 +215,8 @@ mod.addConstrs(psiu[m]*U[l,m] >= Q[l,m] for l in brfs for m in techs)
 mod.optimize()
 
 # Print the objective variable
-#print('\nCost: %g' % mod.objVal)
+print('\nCost: %g' % mod.objVal)
+print("Program Time: %s" % (time.time() - starttime))
 # Print the values of variable F
 #print(mod.getAttr('x',F))
     
@@ -229,7 +232,7 @@ mod.optimize()
 #    target.close()
 
 # Print results to Excel spreadsheet - further manipulation within the sheet is currently needed to strip punctuation and set delimiters
-F_df = pd.DataFrame.from_dict(mod.getAttr('x',F), 'index')
-writer = pd.ExcelWriter('results_v2_excel.xlsx')
-F_df.to_excel(writer,'Sheet1')
-writer.save()
+# F_df = pd.DataFrame.from_dict(mod.getAttr('x',F), 'index')
+# writer = pd.ExcelWriter('results_v2_excel.xlsx')
+# F_df.to_excel(writer,'Sheet1')
+# writer.save()
