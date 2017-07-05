@@ -12,7 +12,7 @@ import time
 
 starttime=time.time()
 
-file = pd.ExcelFile('Task2a_gurobi.xlsx')
+file = pd.ExcelFile('..\Task2a_gurobi.xlsx')
 
 mod = Model('Task2a')
 
@@ -32,7 +32,7 @@ hs = [str(k) for k in u_hs]
 dpt_df = file.parse(sheetname='Sheet1',header=0,parse_cols='U')
 u_dpt = dpt_df.values.flatten()
 dpts = [str(k) for k in u_dpt]
-#print dpts
+
 
 #Biorefineries
 brfs = ['B29']
@@ -134,9 +134,12 @@ for h,v in temp_taujk.iteritems():
 rho = 85
 
 # --------------------- More Sets -------------------
-# Limit taujk and taujl to only include harvest sites within a reasonable range
-taujk = {k:v for k,v in taujk.iteritems() if v < 50}
-taujl = {k:v for k,v in taujl.iteritems() if v < 200}
+# (site,depot) key for sites that are within 50 miles of a depot
+hs_dpts = [k for k,v in taujk.iteritems() if v < 50]
+selected_hs = set([x[0] for x in hs_dpts])
+# Sites that are within 200 mi
+hs_brfs = set([k for k,v in taujl.iteritems() if v < 200])
+dpts_brfs = set(dpts)
 
 ## ------------------- Variables ----------------------
 # Total annual cost (10^6 $)
@@ -158,9 +161,9 @@ R = mod.addVars(prods,brfs,times,name="R")
 H = mod.addVars(feeds,hs,times,name="H")
 
 # Amount of compound sent along arc during period t (10^6 tons)
-Fjl = mod.addVars(feeds,hs,brfs,times,name="Fjl")
-Fjk = mod.addVars(feeds,hs,dpts,times,name="Fjk")
-Fkl = mod.addVars(itrmds,dpts,brfs,times,name="Fkl")
+Fjl = mod.addVars(feeds,hs_brfs,times,name="Fjl")
+Fjk = mod.addVars(feeds,hs_dpts,times,name="Fjk")
+Fkl = mod.addVars(itrmds,dpts_brfs,times,name="Fkl")
 
 # Consumption of compound at deppot/biorefinery during period (10^6 tons)
 Gl_f = mod.addVars(feeds,brfs,brfs_techs,times,name="Gl_f")
@@ -187,6 +190,7 @@ mod.update()
 
 # -------------- Equations -----------------------------------------
 
+
 mod.setObjective(TAC,GRB.MINIMIZE)
 
 #Total cost formulation (10^6 $)
@@ -204,10 +208,10 @@ for t in times:
                   for i in itrmds for l in brfs for m in brfs_techs) + quicksum(Gk[i,k,m,t]*mu[m] for i in feeds for k in dpts for m in dpts_techs)) == Cprod[t])  
 # Transportation cost (10^6 $)    
 for t in times:
-    mod.addConstr(quicksum((kappaTf[i]+kappaTv[i]*taujl[j])*Fjl[i,j,l,t] for i in feeds for l in brfs \
-                           for j in taujl)+quicksum((kappaTf[i]+kappaTv[i]*taujk[(j,k)])*Fjk[i,j,k,t] for i in feeds for j in hs \
-                            for k in dpts for (j,k) in taujk) + quicksum((kappaRf[i]+kappaRv[i]*taukl[k])*Fkl[i,k,l,t] \
-                              for i in itrmds for k in dpts for l in brfs) == Ctrans[t])    
+    mod.addConstr(quicksum((kappaTf[i]+kappaTv[i]*taujl[jl])*Fjl[i,jl,t] for i in feeds for jl in hs_brfs) \
+                      +quicksum((kappaTf[i]+kappaTv[i]*taujk[(j,k)])*Fjk[i,j,k,t] for i in feeds \
+                            for (j,k) in hs_dpts) + quicksum((kappaRf[i]+kappaRv[i]*taukl[kl])*Fkl[i,kl,t] \
+                              for i in itrmds for kl in dpts_brfs) == Ctrans[t])    
 # Annualized capital cost based on daily plant capacity (10^6 $)
 mod.addConstr(quicksum((zeta[m]*Ql[l,m]/2000) for m in brfs_techs for l in brfs)+quicksum((zeta[m]*Qk[k,m]/200) for m in dpts_techs for k in dpts) == Ccapex)
 
@@ -217,60 +221,61 @@ for i in prods:
     for l in brfs:
         for t in times:
             if t > 1:
-                mod.addConstr(Sl[i,l,t-1]*(1-gamma[i])+quicksum(P[i,l,m,t] for m in brfs_techs)-R[i,l,t] == Sl[i,l,t])
+                mod.addConstr(Sl[i,l,t-1]*(1-gamma[i])+quicksum(Pl[i,l,m,t] for m in brfs_techs)-R[i,l,t] == Sl[i,l,t])
             elif t==1:
-                mod.addConstr(Sl[i,l,t+3]*(1-gamma[i])+quicksum(P[i,l,m,t] for m in brfs_techs)-R[i,l,t] == Sl[i,l,t])
+                mod.addConstr(Sl[i,l,t+3]*(1-gamma[i])+quicksum(Pl[i,l,m,t] for m in brfs_techs)-R[i,l,t] == Sl[i,l,t])
                 
 # Depot site inventories (10^6 tons)
 for i in itrmds:
     for k in dpts:
         for t in times:
             if t > 1:
-                mod.addConstr(Sk[i,k,t-1]*(1-gamma[i])-quicksum(Fkl[i,k,l,t] for l in brfs)+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
+                mod.addConstr(Sk[i,k,t-1]*(1-gamma[i])-Fkl[i,k,t]+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
             elif t==1:
-                mod.addConstr(Sk[i,k,t+3]*(1-gamma[i])-quicksum(Fkl[i,k,l,t] for l in brfs)+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
+                mod.addConstr(Sk[i,k,t+3]*(1-gamma[i])-Fkl[i,k,t]+quicksum(Pk[i,k,m,t] for m in dpts_techs) == Sk[i,k,t])
 
+# Need to find a way to speed up the for/if
 # Harvest site inventories (10^6 tons)
 for i in feeds:
-    for j in hs:
+    for j in (hs_brfs | selected_hs):
         for t in times:
             if t > 1:
-                mod.addConstr((Sj[i,j,t-1]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,l,t] for l in brfs if j in taujl)- \
-                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in taujk)) == Sj[i,j,t])
+                mod.addConstr(Sj[i,j,t-1]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,t] for l in brfs if j in hs_brfs) - \
+                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in hs_dpts) == Sj[i,j,t])
             elif t==1:
-                mod.addConstr((Sj[i,j,t+3]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,l,t] for l in brfs if j in taujl)- \
-                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in taujk)) == Sj[i,j,t])
+                mod.addConstr(Sj[i,j,t+3]*(1-gamma[i])+H[i,j,t]-quicksum(Fjl[i,j,t] for l in brfs if j in hs_brfs) - \
+                               quicksum(Fjk[i,j,k,t] for k in dpts if (j,k) in hs_dpts) == Sj[i,j,t])
                 
 # Product equals amount consumed*yield for product at biorefinery l
 for ip in prods:
   for l in brfs:
       for m in brfs_techs:
           for t in times:
-              mod.addConstr(quicksum(eta[(i,ip,m)]*Gl_i[i,l,m,t] for i in itrmds)+quicksum(eta[(i,ip,m)]*Gl_f[i,l,m,t] for i in feeds) == Pl[ip,l,t])              
+              mod.addConstr(quicksum(eta[(i,ip,m)]*Gl_i[i,l,m,t] for i in itrmds)+quicksum(eta[(i,ip,m)]*Gl_f[i,l,m,t] for i in feeds) == Pl[ip,l,m,t])              
 
 # Intermediate produced equals feed consumed*yield for technology m at depot k (10^6 tons)
 for ip in itrmds:
   for k in dpts:
       for m in dpts_techs:
           for t in times:
-              mod.addConstr(quicksum(eta[(i,ip,m)]*Gk[i,k,m,t] for i in feeds) == Pk[ip,l,t]) 
+              mod.addConstr(quicksum(eta[(i,ip,m)]*Gk[i,k,m,t] for i in feeds) == Pk[ip,k,m,t]) 
 
 # Shipping Constraints
 # Biomass converted is equal to the amount shipped to depot k (no storage of biomass at depot) (10^6 tons)
 for i in feeds:
     for k in dpts:
         for t in times:
-            mod.addConstr(quicksum(Gk[i,k,m,t] for m in dpts_techs) == quicksum(Fjk[i,j,k,t] for j in hs if (j,k) in taujk))
+            mod.addConstr(quicksum(Gk[i,k,m,t] for m in dpts_techs) == quicksum(Fjk[i,j,k,t] for (j,k) in hs_dpts))
 # Intermediates converted is equal to the amount shipped to biorefinery l (no storage of intermediates at depot) (10^6 tons)
 for i in feeds:
     for l in brfs:
         for t in times:
-            mod.addConstrs(quicksum(Gl_f[i,l,m,t] for m in brfs_techs) == quicksum(Fjl[i,j,l,t] for j in taujl))
+            mod.addConstrs(quicksum(Gl_f[i,l,m,t] for m in brfs_techs) == quicksum(Fjl[i,jl,t] for jl in hs_brfs))
 # Biomass converted is equal to the amount shipped to biorefinery l (no storage of biomass at biorefinery) (10^6 tons) 
 for i in itrmds:
     for l in brfs:
         for t in times:
-            mod.addConstrs(quicksum(Gl_i[i,l,m,t] for m in brfs_techs) == quicksum(Fkl[i,k,l,t] for k in taukl))
+            mod.addConstrs(quicksum(Gl_i[i,l,m,t] for m in brfs_techs) == quicksum(Fkl[i,kl,t] for kl in dpts_brfs))
 
 # Cannot harvest more biomass than the site produces (10^6 tons)
 mod.addConstrs(alpha[j,i,t]*(pow(10,-6)) >= H[i,j,t] for i in feeds for j in hs for t in times) 
